@@ -7,22 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
-library(dplyr)
-library(reshape2)
-library(gridExtra)
-library(MCMCpack)
-library(gganimate)
-library(ggplot2)
-library(plotly)
-library(grid)
-library(stargazer)
-library(scatterplot3d)
-library(plot3D)
-library(animation)
-library(gganimate)
-library(MASS)
-library(coda)
+# Libraries are loaded in function_definitions.R
 set.seed(27806189)
 ```
 
