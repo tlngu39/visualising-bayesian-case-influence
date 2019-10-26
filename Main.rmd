@@ -27,7 +27,6 @@ set.seed(27806189)
 ```
 
 ```{r function defs, echo=FALSE, warning=FALSE}
-source("helperFunctions.R")
 source("function_definitions.R")
 
 ff_data <- load("data/Portfolios_Formed_on_ME.csv", frequency = "monthly", model = "5FF")
