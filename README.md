@@ -7,6 +7,6 @@ The data folder contains some data from https://mba.tuck.dartmouth.edu/pages/fac
 
 The file function_definitions.R contain all the functions used in the main file.
 
-The file Main.rmd contains all the relevant code to produce the diagnostics in the paper. Many of the chunks are self-contained and can be executed without any prerequisite code. The exception is when the .rds objects for the specified model doesn't exist. In that case, they must be generated again by setting 'write=TRUE' in the 'fitBayesianCAPM' function. Although an .rmd file, the code isn't really designed to be knitted.
+The file Main.rmd contains all the relevant code to produce the diagnostics in the paper. Many of the chunks are self-contained and can be executed without any prerequisite code. The exception is when the .rds objects for the specified model doesn't exist. In that case, they must be generated again by setting 'write=TRUE' in the 'fitBayesianCAPM' function. Although written as an .rmd file, the code isn't really designed to be knitted.
 
 Some chunks produce outputs specifically for the Shiny App, such as the .rds objects and .gif files. 
