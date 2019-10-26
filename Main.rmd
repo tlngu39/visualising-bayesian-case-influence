@@ -1,0 +1,1132 @@
+---
+title: "Thesis Code"
+author: "Tony"
+date: "1 October 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(reshape2)
+library(gridExtra)
+library(MCMCpack)
+library(gganimate)
+library(ggplot2)
+library(plotly)
+library(grid)
+library(stargazer)
+library(scatterplot3d)
+library(plot3D)
+library(animation)
+library(gganimate)
+library(MASS)
+library(coda)
+set.seed(27806189)
+```
+
+```{r function defs, echo=FALSE, warning=FALSE}
+source("helperFunctions.R")
+
+fitBayesianCAPM = function(model_data, factors, fileName, write) {
+  # Define burn-in and samples
+  B = 2000
+  G = 10000
+  M = G
+  
+  factors_ = factors
+  # Manipulating regression formula
+  formula = paste(factors[1], " ~ ", factors[2])
+  if(length(factors) > 2){
+    for (i in 3:length(factors)){
+      formula = paste(formula, " + ", factors[i])
+    }
+  }
+  #print(formula)
+  
+  # Fitting Bayesian model -> RETHINK PRIOR SPECIFICATION | ALSO: CONSIDER MODEL SPECIFICATION (GIBBS?)
+  model_mcmc = MCMCregress(as.formula(formula), data = model_data, burnin = B, mcmc = M, seed = 27806189, b0 = 0, B0 = 0, c0 = 0.001, d0 = 0.001)
+
+  # Converting elements in MCMC to numeric
+  model_mcmc.data = apply(model_mcmc, 2, as.numeric) %>% as.matrix()
+  colnames(model_mcmc)[1] = "Intercept"
+  
+  # Apply Thomas et al Method
+  theta = model_mcmc.data[, 1:(ncol(model_mcmc.data) - 1)]
+  sigma2 = model_mcmc.data[, ncol(model_mcmc.data)]
+  n = length(model_data$Time)
+  W = matrix(0, M, n)
+  
+  # Setting up y vector and X matrix
+  y = as.matrix(model_data[factors[1]]) # y is excess returns
+  #factors_[factors == "\`MKT-RF\`"] = "MKT-RF"
+  factors_ = factors_[-1]
+  X = model_data[factors_]
+  X$intercept = 1 
+  X = X %>% dplyr::select(intercept, everything()) # X is actual factors including intercept
+
+  # Need to have everything as.matrix for matrix arithmetic to work
+  
+  if (write){
+    # Evaluating log case importance sampling deletion weights
+    for (i in 1:n){
+      for (j in 1:M){
+        W[j,i] = 0.5*log(2*pi*sigma2[j]) + 0.5*(1/sigma2[j])*(y[i] - as.matrix(X[i,]) %*% theta[j,] )^2
+        #print(c(i, j))
+      }
+      #print(i)
+    } 
+    saveRDS(W, file = fileName)
+  }
+  else if (!write)
+  {
+    print(paste("Reading from ", fileName, sep = ""))
+    W = readRDS(file = fileName)
+  }
+  else
+    return("Error in specifying read or write of RDS file")
+  
+  # Storing covariance matrix of weights
+  w_matrix = W
+  Cov = cov(W)
+  
+  # Get eigen-decomposition
+  Loadings_ = round(eigen(Cov)$vectors, 4)
+  prop_ = round(eigen(Cov)$values / sum(eigen(Cov)$values), 4)
+  
+  # Returns list of: (1) dataframe containing loadings and proportions, (2) MCMC draws
+  # (1) is the result of performing an eigenvector decomp on cov(W)
+  return(list(data.frame(Loadings = Loadings_, prop = prop_), model_mcmc, w_matrix))
+} 
+
+plotPCA = function(data_df, model_df, title_) {
+  # model_df should be the loadings + prop object created by fitBayesianCAPM
+  # PC1 = z-axis, PC2 = x-axis, PC3 = y-axis
+  zlab = paste("PC1 (", round(100 * model_df$prop[1], 0), "%)", sep = "")
+  xlab = paste("PC2 (", round(100 * model_df$prop[2], 0), "%)", sep = "")
+  ylab = paste("PC3 (", round(100 * model_df$prop[3], 0), "%)", sep = "")
+  
+  time = data_df$Time
+  Loadings.df = data.frame(Time = time, PC1 = model_df[, 1], PC2 = model_df[, 2], PC3 = model_df[, 3])
+  plot_ly(Loadings.df, z = ~PC1, x = ~PC2, y = ~PC3, text = ~paste("Time: ", Time, "<br>PC1: ", PC1, "<br>PC2: ", PC2, "<br>PC3: ", PC3),
+          hoverinfo = "text", marker = list(size = 4)) %>%
+    layout(title = title_, scene = list(xaxis = list(title = xlab), yaxis = list(title = ylab), zaxis = list(title = zlab)))
+}
+
+# Parallel importance reasmpling function
+resampleDraws = function(W, model_draws, case_delete){
+  model_draws.df = as.data.frame(model_draws)
+  # Normalise weights (must also transform since Thomas et al. computes the LOG weights)
+  w = exp(W[, case_delete])
+  L = nrow(W)
+  w_star = w/sum(w)
+  beta_resample = sample_n(model_draws.df, L, weight = w, replace = TRUE)
+  return(beta_resample)
+}
+
+plotScatter3D = function(model_df, theta, threshold, xadj = -0.01, yadj = -0.01, zadj = -0.03, hide = NULL){
+  pca.df = data.frame(PC1 = model_df[, 1], PC2 = model_df[, 2], PC3 = model_df[, 3],
+                    prop = model_df[, ncol(model_df)], t = seq(1, ncol(model_df) - 1))
+  pca.df$t = ""
+  eu_dist = rep(0, nrow(pca.df))
+  for(i in 1:nrow(pca.df)){
+    eu_dist[i] = dist(rbind(pca.df[i, 1:3], c(0, 0, 0)))
+    if(eu_dist[i] > threshold)
+      pca.df$t[i] = i
+  }
+  
+  # Allow overiding labels of certain obs
+  pca.df$t[hide] = ""
+  scatter3D(x = pca.df$PC2,
+            y = pca.df$PC3,
+            z = pca.df$PC1,
+            xlab = paste("PC2 (", round(100 * pca.df$prop[2], 0), "%)", sep = ""),
+            ylab = paste("PC3 (", round(100 * pca.df$prop[3], 0), "%)", sep = ""),
+            zlab = paste("PC1 (", round(100 * pca.df$prop[1], 0), "%)", sep = ""),
+            col = "black", 
+            #colvar = pca.df$t,
+            colkey = FALSE,
+            surface = FALSE, 
+            theta = theta, 
+            phi = 20, 
+            pch = 20, 
+            cex = 1,
+            bty = "b2",
+            ticktype = "simple")
+  text3D(x = pca.df$PC2 + xadj, y = pca.df$PC3 + yadj, z = pca.df$PC1 + zadj,  labels = pca.df$t,
+        add = TRUE, colkey = FALSE, cex = 1)
+}
+ff_data <- load("data/Portfolios_Formed_on_ME.csv", frequency = "monthly", model = "5FF")
+
+# Construct excess returns
+ff_data <- ff_data %>% mutate(Lo30Ex = `Lo 30` - RF, Med40Ex = `Med 40` - RF, Hi30Ex = `Hi 30` - RF)
+
+# Create decimal version of 'Time' for plotting
+ff_data <- ff_data %>% mutate(Time_dec = as.numeric(substr(ff_data$Time, 0, 4)) + as.numeric(substr(ff_data$Time, 5, 6))/12)
+```
+
+```{r thomas_procedure, echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
+#####3 Test new function with new definition of MKT #######
+
+# Three-Factor CAPM
+model_3ff_formula = c("Lo30Ex", "MKTRF", "SMB", "HML") 
+model_3ff = fitBayesianCAPM(ff_data, model_3ff_formula, fileName = "data/object/w_matrix_3ff_lo30.rds", write = FALSE)
+
+# Three-Factor + RMW
+model_formula = c("Lo30Ex", "MKTRF", "SMB", "HML", "RMW")
+model_3ff_rmw = fitBayesianCAPM(ff_data, model_formula, fileName = "data/object/w_matrix_3ff_rmw_lo30.rds", write = FALSE)
+
+# Three-Factor + CMA
+model_formula = c("Lo30Ex", "MKTRF", "SMB", "HML", "CMA") 
+model_3ff_cma = fitBayesianCAPM(ff_data, model_formula, fileName = "data/object/w_matrix_3ff_cma_lo30.rds", write = FALSE)
+
+# Five-Factor
+model_5ff_formula = c("Lo30Ex", "MKTRF", "SMB", "HML", "RMW", "CMA")
+model_5ff = fitBayesianCAPM(ff_data, model_5ff_formula, fileName = "data/object/w_matrix_5ff_lo30.rds", write = FALSE)
+
+plotPCA(ff_data, model_3ffk[[1]], "Three-Factor CAPM Small Stocks")
+
+temp.data = data.frame(Time = as.numeric(substr(ff_data$Time, 0, 4)) + as.numeric(substr(ff_data$Time, 5, 6))/12, Lo30Ex = ff_data$Lo30Ex)
+ggplot(temp.data, aes(x = Time, y = Lo30Ex)) + geom_line()
+
+# plotPCA(ff_data, model_5ff[[1]], "Five-Factor CAPM Small Stocks")
+# plotPCA(ff_data, model_3ff_cma[[1]], "3FF + CMA")
+# plotPCA(ff_data, model_3ff_rmw[[1]], "3FF + RMW")
+
+
+```
+
+```{r models, warning=FALSE, echo=FALSE}
+########################
+# Use comb(FACTORS, m = 1,2,3,4,5) to get all possible combinations
+portfolio = "Lo30Ex"
+factors = c("MKTRF", "SMB", "HML", "RMW", "CMA")
+
+# All Factor combinations
+factors_comb = data.frame(V1 = rep("", 5))
+for(i in 1:5){
+  t = combn(factors, i)
+  for(j in 1:ncol(t)){
+    l = t[, j]
+    # Fill column with zeroes if not of length 5
+    if(length(l) != 5){
+      l = c(l, rep("", 5 - length(l)))
+    }
+    factors_comb[, ncol(factors_comb) + 1] = sort(l, decreasing = FALSE)
+  }
+  # Get rid of first row on final loop which is just 0's
+  # Sort is to get alphabetical naming convention
+  if(i == 5)
+    factors_comb = factors_comb[,-1]
+}
+
+
+# Fit each model in factors_comb and have a coherent naming system: w_matrix_FACTOR1_FACTOR2_..._FACTORN_lo30.rds
+
+for (i in 1:ncol(factors_comb)){
+  formula = c(portfolio, factors_comb[, i])
+  # Get rid of blank entries
+  formula = formula[which(formula != "")]
+  #print(formula)
+
+  # Construct name string
+  name = ""
+  for(j in 1:length(formula)){
+    # Append to string name
+    name = paste(name, formula[j], "_", sep = "")
+  }
+  # Do something with file name
+  file = paste("data/object/full/", "W_matrix_",substr(name, 0, nchar(name)-1), ".rds", sep = "")
+  #print(file)
+  if(file.exists(file))
+  {
+    print(paste("File ", file, " already exists!", sep = ""))
+  }
+  else{
+    print(paste("Currently saving to ", file, sep = ""))
+    fitBayesianCAPM(ff_data, formula, fileName = file, write = TRUE)
+  }
+}
+
+```
+
+```{r shinyrds}
+# This chunk prepares shiny .rds objects
+# Objects should be named FACTOR1_FACTOR2_FACTOR3.rds
+# Factors should be ordered in alphabetical order
+# .rds objects should contain Loadings.1, Loadings.2, Loadings.3 and prop
+
+# Load each already produced RDS (of W matrix) and create new one
+# We have factor_comb already so should be straightforward
+
+# Create vector of filenames
+filenames = c()
+for(i in 1:ncol(factors_comb)){
+  name = ""
+  for(j in 1:length(factors_comb[, i])){
+    if(factors_comb[j, i] != "")
+      name = paste(name, factors_comb[j, i], sep = "_")
+  }
+  t = paste("data/object/full/W_matrix_Lo30Ex", name, ".rds", sep = "")
+  filenames = c(filenames, t)
+}
+
+for(i in 1:length(filenames)){
+  w = readRDS(filenames[i])
+  cov = cov(w)
+  
+  Loadings = round(eigen(cov)$vectors, 4)
+  prop = round(eigen(cov)$values / sum(eigen(cov)$values), 4)
+  
+  data.df = data.frame(PC1 = Loadings[, 1], 
+                       PC2 = Loadings[, 2],
+                       PC3 = Loadings[, 3],
+                       prop = prop)
+  
+  # Extract naming
+  fileName = substr(filenames[i], nchar("data/object/full/W_matrix_Lo30Ex") + 1, nchar(filenames[i]))
+  print(paste("Saving ", fileName, sep = ""))
+  saveRDS(data.df, file = paste("data/object/full/shiny/shiny", fileName, sep = ""))
+}
+```
+
+```{r shiny_gif}
+# This chunk requires factors_comb defined in 'models' chunk
+
+animatePlot = function(model_df, startAngle = 0, endAngle = 360, angleStep = 1, fileName, width = 550, height = 550, speed = 0.05){
+  # The model_df passed should contain a dataframe of Loadings + proportions (output of Thomas Method)
+  setwd("Case-Influence/www")
+  frames = (endAngle - startAngle)/angleStep
+  nextAngle = startAngle + angleStep
+  
+  saveGIF({
+    for (i in 1:frames){
+    scatter3D(x = model_df[,2], 
+              y = model_df[,3], 
+              z = model_df[,1],
+              xlab = paste("PC2 (", round(100 * model_df$prop[2], 0), "%)", sep = ""),
+              ylab = paste("PC3 (", round(100 * model_df$prop[3], 0), "%)", sep = ""),
+              zlab = paste("PC1 (", round(100 * model_df$prop[1], 0), "%)", sep = ""),
+              col = "black", 
+              surface = FALSE, 
+              theta = nextAngle, 
+              phi = 20, 
+              pch = 20, 
+              cex = 1,
+              bty = "b2",
+              ticktype = "detailed")
+    nextAngle = nextAngle + 1
+    #print(i)
+    }
+  }, interval = speed, movie.name = fileName, ani.width = width, ani.height = height) 
+  
+  setwd("../")
+  setwd("../")
+}
+
+# Only run these lines to get the .gif files
+# animatePlot(model_5ff[[1]], fileName = "5FF_PCA.gif", speed = 0.05, angleStep = 0.5)
+# animatePlot(model_3ff[[1]], fileName = "3FF_PCA.gif", speed = 0.05, angleStep = 0.5)
+# animatePlot(model_3ff_cma[[1]], fileName = "3FF_CMA_PCA.gif", speed = 0.05, angleStep = 0.5)
+# animatePlot(model_3ff_rmw[[1]], fileName = "3FF_RMW_PCA.gif", speed = 0.05, angleStep = 0.5)
+
+# Load .rds files with matrix and compute Loadings
+for(i in 1:length(factors_comb)){
+  model = ""
+  for(j in 1:length(factors_comb[, i])){
+    if(factors_comb[j, i] != ""){
+      model = paste(model, factors_comb[j, i], sep = "_")
+    }
+  }
+  loadings = readRDS(paste("Case-Influence/objects/shiny", model, ".rds", sep = ""))
+  animatePlot(loadings, fileName = paste("shiny", model, ".gif", sep = ""))
+}
+
+```
+
+```{r loo3ff, warning=TRUE, echo=FALSE}
+# Formula names should be in alphabetical order to have consistency with fitBayesianCAPM function
+# Three-Factor CAPM
+model_3ff_formula = c("Lo30Ex", "HML", "MKTRF", "SMB")
+model_3ff = fitBayesianCAPM(ff_data, model_3ff_formula, fileName = "data/object/full/w_matrix_Lo30Ex_HML_MKTRF_SMB.rds", write = FALSE)
+
+N = length(ff_data$Time)
+M = nrow(model_3ff[[2]])
+
+# Full data posterior for 3FF model
+# X and beta MUST BE ORDERED APPROPRIATELY
+X = data.frame(Intercept = 1, MKTRF = ff_data$MKTRF, SMB = ff_data$SMB, HML = ff_data$HML)
+X = X[, order(names(X))]
+
+beta_full = as.data.frame(model_3ff[[2]][, 1:4])
+beta_full = beta_full[, order(names(beta_full))]
+y_hat_full = as.matrix(beta_full) %*% as.matrix(t(X)) 
+
+# Flagging 'influential' based on distance measure
+pca.df = data.frame(PC1 = model_3ff[[1]][, 1], PC2 = model_3ff[[1]][, 2], PC3 = model_3ff[[1]][, 3],
+                    prop = model_3ff[[1]][, ncol(model_3ff[[1]])], t = seq(1, ncol(model_3ff[[1]]) - 1))
+pca.df$t = ""
+  
+threshold = 0.22
+eu_dist = rep(0, nrow(pca.df))
+for(i in 1:nrow(pca.df)){
+  eu_dist[i] = dist(rbind(pca.df[i, 1:3], c(0, 0, 0)))
+  if(eu_dist[i] > threshold)
+    pca.df$t[i] = i
+}
+influential_obs1 = which(eu_dist > threshold)
+
+### PCA display
+pdf("report/figures/figure1_3_3ff.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,0.5) + 1.0)
+  
+plotScatter3D(model_3ff[[1]], 15, threshold, zadj = -0.04, xadj = -0.045)
+#mtext("(a)", side = 1, line = -16)
+
+plotScatter3D(model_3ff[[1]], 90, threshold, zadj = -0.04, yadj = -0.02, xadj = -0.0)
+#mtext("(b)", side = 1, line = -16)
+
+plotScatter3D(model_3ff[[1]], 170, threshold, yadj = 0.01, zadj = -0.03, xadj = 0.02)
+#mtext("(c)", side = 1, line = -16)
+graphics.off()
+
+
+### Leave-one-out predictive distribution
+
+# Need to loop over years and predict the left-one-out
+y_hat_loo = matrix(0, nrow = M, ncol = N)
+y_hat_diff = matrix(0, nrow = M, ncol = N)
+
+for(i in 1:N){
+  beta_resample = resampleDraws(model_3ff[[3]], model_3ff[[2]], i)
+  beta_resample = beta_resample[, order(names(beta_resample[, 1:4]))]
+  y_hat_loo[, i] = as.matrix(beta_resample[, 1:4]) %*% as.matrix(t(X[i, ]))
+  y_hat_diff[, i] = y_hat_loo[, i] - median(y_hat_full[, i])
+}
+
+#Computing median of the difference distributions
+y_hat_med = data.frame(Time = ff_data$Time_dec,
+                       median = apply(y_hat_diff, 2, median),
+                       low25 = apply(y_hat_diff, 2, quantile, 0.25),
+                       high75 = apply(y_hat_diff, 2, quantile, 0.75))
+y_hat_med$Influential = FALSE
+y_hat_med$Influential[influential_obs1] = TRUE
+
+# LOOPDD split into two figures
+{
+pdf("report/figures/loopdd_2x1.pdf")
+
+p1 = ggplot(y_hat_med[1:350,], aes(x = Time, y = median, colour = Influential)) + 
+  geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
+  geom_point(shape = 18) + ggtitle(title) + ylim(-0.35, 0.22) +
+  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+
+p2 = ggplot(y_hat_med[350:nrow(y_hat_med),], aes(x = Time, y = median, color = Influential)) + 
+  geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
+  geom_point(shape = 18) + ggtitle(title) + ylim(-0.35, 0.22) +
+  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+
+grid.arrange(p1, p2, nrow = 2, ncol = 1)
+graphics.off()
+}
+
+### Leave-one-out Marginal posteriors
+beta_full = as.data.frame(model_3ff[[2]])
+
+obs = influential_obs1
+N = length(obs)
+M = nrow(model_3ff[[2]])
+
+X = data.frame(Intercept = 1, MKTRF = ff_data$MKTRF, SMB = ff_data$SMB, HML = ff_data$HML)
+X = X[, order(names(X))]
+
+beta_full = as.data.frame(model_3ff[[2]])
+
+marginal_diff = data.frame()
+case = data.frame()
+
+for(i in 1:length(obs)){
+  resample = resampleDraws(model_3ff[[3]], model_3ff[[2]], obs[i])
+  
+  diff = matrix(0, M, ncol(beta_full))
+  for(j in 1:ncol(resample)){
+    diff[, j] = resample[, j] - median(beta_full[, j])
+  }
+  
+  marginal_diff = rbind(marginal_diff, diff)
+  case = rbind(case, as.matrix(rep(as.character(obs[i]), M)))
+}
+colnames(case) = "Case"
+colnames(marginal_diff) = colnames(beta_full)
+
+
+marginal_diff = cbind(marginal_diff, case) 
+
+marginal_diff.long = marginal_diff[, colnames(marginal_diff) != "sigma2"] %>% 
+  dplyr::select(Intercept, MKTRF, SMB, HML, Case) %>% gather(key = "param", value = "posterior.diff", -Case, factor_key = TRUE)
+
+levels(marginal_diff.long$param) = c("beta[0]", "beta[1]", "beta[2]", "beta[3]")
+
+pdf("report/figures/3ff_postdiff.pdf")
+ggplot(transform(marginal_diff.long,
+                 param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]"))), 
+       aes(x = Case, y = posterior.diff)) + geom_boxplot() +
+  facet_wrap(~param, nrow = 2, ncol = 2, labeller = label_parsed) + ylab("Difference")
+graphics.off()
+```
+
+```{r loo5ff, warning=TRUE, echo=FALSE}
+# Formula names should be in alphabetical order to have consistency with fitBayesianCAPM function
+# Three-Factor CAPM
+model_5ff_formula = c("Lo30Ex", "CMA", "HML", "MKTRF", "RMW", "SMB")
+model_5ff = fitBayesianCAPM(ff_data, model_5ff_formula, fileName = "data/object/full/w_matrix_Lo30Ex_CMA_HML_MKTRF_RMW_SMB.rds", write = FALSE)
+
+N = length(ff_data$Time)
+M = nrow(model_5ff[[2]])
+
+# Full data posterior for 5ff model
+# X and beta MUST BE ORDERED APPROPRIATELY
+X = data.frame(Intercept = 1, MKTRF = ff_data$MKTRF, SMB = ff_data$SMB, HML = ff_data$HML, RMW = ff_data$RMW, CMA = ff_data$CMA)
+X = X[, order(names(X))]
+
+beta_full = as.data.frame(model_5ff[[2]][, 1:6])
+beta_full = beta_full[, order(names(beta_full))]
+y_hat_full = as.matrix(beta_full) %*% as.matrix(t(X)) 
+
+# Flagging 'influential' based on distance measure
+t = 0.22
+pca.df = data.frame(PC1 = model_5ff[[1]][, 1], PC2 = model_5ff[[1]][, 2], PC3 = model_5ff[[1]][, 3],
+                    prop = model_5ff[[1]][, ncol(model_5ff[[1]])], t = seq(1, ncol(model_5ff[[1]]) - 1))
+pca.df$t = ""
+eu_dist = rep(0, nrow(pca.df))
+for(i in 1:nrow(pca.df)){
+  eu_dist[i] = dist(rbind(pca.df[i, 1:3], c(0, 0, 0)))
+  if(eu_dist[i] > t)
+    pca.df$t[i] = i
+}
+influential_obs2 = which(eu_dist > threshold)
+
+### PCA display
+pdf("report/figures/figure1_3_5ff.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,0.5) + 1.0)
+  
+plotScatter3D(model_5ff[[1]], theta = 1, threshold = t, zadj = -0, xadj = 0.02)
+#mtext("(a)", side = 1, line = -16)
+
+plotScatter3D(model_5ff[[1]], 120, t, zadj = -0.03, yadj = 0.02, xadj = 0.02)
+#mtext("(b)", side = 1, line = -16)
+
+plotScatter3D(model_5ff[[1]], 280, t, yadj = 0.1, zadj = -0.05, xadj = 0)
+#mtext("(c)", side = 1, line = -16)
+graphics.off()
+
+
+### Leave-one-out predictive distribution
+
+# Need to loop over years and predict the left-one-out
+y_hat_loo = matrix(0, nrow = M, ncol = N)
+y_hat_diff = matrix(0, nrow = M, ncol = N)
+
+for(i in 1:N){
+  beta_resample = resampleDraws(model_5ff[[3]], model_5ff[[2]], i)
+  beta_resample = beta_resample[, order(names(beta_resample[, 1:6]))]
+  y_hat_loo[, i] = as.matrix(beta_resample[, 1:6]) %*% as.matrix(t(X[i, ]))
+  y_hat_diff[, i] = y_hat_loo[, i] - median(y_hat_full[, i])
+}
+
+#Computing median of the difference distributions
+y_hat_med = data.frame(Time = ff_data$Time_dec,
+                       median = apply(y_hat_diff, 2, median),
+                       low25 = apply(y_hat_diff, 2, quantile, 0.25),
+                       high75 = apply(y_hat_diff, 2, quantile, 0.75))
+
+y_hat_med$Influential = FALSE
+y_hat_med$Influential[influential_obs2] = TRUE
+
+pdf("report/figures/loopdd_2x1_5ff.pdf")
+
+p1 = ggplot(y_hat_med[1:350,], aes(x = Time, y = median, colour = Influential)) + 
+  geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
+  geom_point(shape = 18) + ggtitle(title) + ylim(-0.43, 0.215) +
+  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+
+p2 = ggplot(y_hat_med[350:nrow(y_hat_med),], aes(x = Time, y = median, color = Influential)) + 
+  geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
+  geom_point(shape = 18) + ggtitle(title) + ylim(-0.43, 0.21) +
+  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+
+grid.arrange(p1, p2, nrow = 2, ncol = 1)
+graphics.off()
+
+
+### Leave-one-out on marginal posteriors
+beta_full = as.data.frame(model_5ff[[2]])
+
+obs = influential_obs2
+N = length(obs)
+M = nrow(model_5ff[[2]])
+
+X = data.frame(Intercept = 1, MKTRF = ff_data$MKTRF, SMB = ff_data$SMB, HML = ff_data$HML, RMW = ff_data$RMW, CMA = ff_data$CMA)
+X = X[, order(names(X))]
+
+beta_full = as.data.frame(model_5ff[[2]])
+
+marginal_diff = data.frame()
+case = data.frame()
+
+for(i in 1:length(obs)){
+  resample = resampleDraws(model_5ff[[3]], model_5ff[[2]], obs[i])
+  
+  diff = matrix(0, M, ncol(beta_full))
+  for(j in 1:ncol(resample)){
+    diff[, j] = resample[, j] - median(beta_full[, j])
+  }
+  
+  marginal_diff = rbind(marginal_diff, diff)
+  case = rbind(case, as.matrix(rep(as.character(obs[i]), M)))
+}
+
+colnames(case) = "Case"
+colnames(marginal_diff) = colnames(beta_full)
+split = 6
+marginal_diff = cbind(marginal_diff, case) 
+
+#####
+#Boxplots for first half of observations
+
+marginal_diff.long = marginal_diff[1:(M*split), ] %>% select(Intercept, MKTRF, SMB, HML, RMW, CMA,Case) %>% gather(key = "param", value = "posterior.diff", -Case, factor_key = TRUE) %>% filter(param != "sigma2")
+
+levels(marginal_diff.long$param) = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]", expression(sigma^"2"))
+
+pdf("report/figures/5ff_postdiff_1.pdf")
+ggplot(transform(marginal_diff.long,
+                 param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"))), 
+       aes(x = Case, y = posterior.diff)) + geom_boxplot() +
+  facet_wrap(~param, nrow = 2, ncol = 3, labeller = label_parsed) +
+  ylab("Difference") 
+graphics.off()
+
+
+#####
+# Boxplots for rest of observations
+marginal_diff.long2 = marginal_diff[(M*split+1):nrow(marginal_diff), ] %>% select(Intercept, MKTRF, SMB, HML, RMW, CMA,Case) %>% gather(key = "param", value = "posterior.diff", -Case, factor_key = TRUE) %>% filter(param != "sigma2")
+
+levels(marginal_diff.long2$param) = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]", expression(sigma^"2"))
+
+pdf("report/figures/5ff_postdiff_2.pdf")
+ggplot(transform(marginal_diff.long2,
+                 param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"))), 
+       aes(x = Case, y = posterior.diff)) + geom_boxplot() +
+  facet_wrap(~param, nrow = 2, ncol = 3, labeller = label_parsed) +
+  ylab("Difference")
+graphics.off()
+
+#######
+# Boxplots for 2000s observations
+target = levels(marginal_diff$Case)
+target = target[3:length(target)]
+
+marginal_diff.long = marginal_diff %>% select(Intercept, MKTRF, SMB, HML, RMW, CMA,Case) %>% filter(Case == target)  %>% gather(key = "param", value = "posterior.diff", -Case, factor_key = TRUE) %>% filter(param != "sigma2")
+
+levels(marginal_diff.long$param) = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]", expression(sigma^"2"))
+
+pdf("report/figures/5ff_postdiff_3.pdf")
+ggplot(transform(marginal_diff.long,
+                 param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"))), 
+       aes(x = Case, y = posterior.diff)) + geom_boxplot() +
+  facet_wrap(~param, nrow = 2, ncol = 3, labeller = label_parsed) +
+  ylab("Difference")
+graphics.off()
+
+```
+
+```{r simulated}
+# This chunk produces the diagnostics using a simulated dataset
+set.seed(27806189)
+# Simulate 'bad' and 'good' leverage data
+N = 90
+O = 5
+sigma = matrix(0, nrow = 2, ncol = 2)
+mu = c(0, 0, 0, 0)
+
+sigma = matrix(0.8, nrow = 4, ncol = 4)
+diag(sigma) = 0.9
+
+# Simulate outliers
+cov_out = 0.05
+sig = matrix(cov_out, nrow = 4, ncol = 4)
+diag(sig) = 0.1
+
+out1 = mvrnorm(O, mu + 5, sig)
+out2 = mvrnorm(O, c(-5, 5, 5, 5), sig)
+
+# Simulate draws and combine with outliers
+draws = mvrnorm(N, mu, sigma)
+draws = rbind(draws, out1, out2)
+
+data.df = data.frame(y = draws[, 1], x1 = draws[, 2], x2 = draws[, 3], x3 = draws[, 4], Group = c(rep("A", N), rep("B", O), rep("C", O)))
+labelB = paste(which(data.df$Group == "B")[1], which(data.df$Group == "B")[length(which(data.df$Group == "B"))], sep = "-")
+labelC = paste(which(data.df$Group == "C")[1], which(data.df$Group == "C")[length(which(data.df$Group == "C"))], sep = "-")
+
+# Y ~ X1
+pdf("report/figures/sim_x1.pdf", height = 3, width = 3.1)
+ggplot(data.df, aes(x = x1, y = y, color = Group)) + geom_point() + annotate("text", x = 4.6, y = -4,label = labelC) + 
+  annotate("text", x = 4.8, y = 4, label = labelB) + theme(legend.position = "none")
+dev.off()
+
+# Y ~ X2
+pdf("report/figures/sim_x2.pdf", heigh = 3, width = 3.1)
+ggplot(data.df, aes(x = x2, y = y, color = Group)) + geom_point() + annotate("text", x = 4.7, y = -4,label = labelC) + 
+  annotate("text", x = 4.2, y = 4, label = labelB) + theme(legend.position = "none")
+dev.off()
+
+# Y ~ X3
+pdf("report/figures/sim_x3.pdf", height = 3, width = 3.1)
+ggplot(data.df, aes(x = x3, y = y, color = Group)) + geom_point() + annotate("text", x = 4.6, y = -4,label = labelC) + 
+  annotate("text", x = 5, y = 4, label = labelB)
+dev.off()
+
+# Obtain MCMC draws
+M = 10000
+n = nrow(data.df)
+sim_model = MCMCregress(y ~ x1 + x2 + x3, data = data.df, burnin = 2000, mcmc = M, seed = 27806189, b0 = 0, B0 = 0, c0 = 0.001, d0 = 0.001)
+sim_model.df = as.data.frame(sim_model)
+
+# Compute log-weights
+W = matrix(0, nrow = M, ncol = nrow(data.df))
+Y = data.df$y
+X = data.df %>% select(-Group, -y) %>% mutate(INT = 1) %>% select(INT, everything()) %>% as.matrix()
+theta = sim_model.df %>% select(-sigma2) %>% as.matrix()
+sigma2 = sim_model.df$sigma2 
+
+for(i in 1:n){
+  for(j in 1:M){
+    W[j, i] = 0.5 * log(2 * pi * sigma2[j]) + 0.5 * (1 / sigma2[j]) * (Y[i] - theta[j, ] %*% X[i, ])^2
+  }
+}
+
+# Store empirical variance-covariance
+Cov = cov(W)
+
+# Eigen-decomposition
+Loadings = round(eigen(Cov)$vectors,4)
+prop = round(eigen(Cov)$values/sum(eigen(Cov)$values),4)
+
+Loadings.df = data.frame(PC1 = Loadings[, 1], PC2 = Loadings[, 2], PC3 = Loadings[, 3], Group = data.df$Group,  prop = prop)
+
+### PCA Display
+
+pdf("report/figures/simulated_1x3.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,0.5) + 1.0)
+influential = list(which(Loadings.df$Group == "B"), which(Loadings.df$Group == "C"))
+c = c("#00BA38", "#619CFF")
+
+# Adjust the text by specifying a 'position' dataframe
+position.df = list(
+  Loadings.df[influential[[1]], 1:3],
+  Loadings.df[influential[[2]], 1:3]
+  )
+# Manual adjustments
+position.df[[1]]$PC2[4] = position.df[[1]]$PC2[4] - 0.05
+position.df[[1]]$PC3[4] = position.df[[1]]$PC3[4] - 0.04
+position.df[[2]]$PC2[3] = position.df[[2]]$PC2[4] - 0.09
+position.df[[2]]$PC2[4] = position.df[[2]]$PC2[4] - 0.04
+plot(Loadings.df, influential, xadj = 0.01, zadj = -0.01, colours = c, theta = 0, main_colour = "#F8766D", pos.df = position.df, text = TRUE)
+
+# Adjust the text by specifying a 'position' dataframe
+position.df = list(
+  Loadings.df[influential[[1]], 1:3],
+  Loadings.df[influential[[2]], 1:3]
+  )
+# Manual adjustments
+position.df[[1]]$PC2[2] = position.df[[1]]$PC2[2] + 0.07
+position.df[[1]]$PC3[2] = position.df[[1]]$PC3[2] + 0.03
+position.df[[2]]$PC2[3] = position.df[[2]]$PC2[4] - 0.04
+position.df[[2]]$PC1[4] = position.df[[2]]$PC1[4] + 0.04
+position.df[[2]]$PC2[5] = position.df[[2]]$PC2[5] + 0.07
+plot(Loadings.df, influential, yadj = -0.03, xadj = -0.03, zadj = -0.02, colours = c, theta = 145, main_colour = "#F8766D", pos.df = position.df, text = TRUE)
+
+# Adjust the text by specifying a 'position' dataframe
+position.df = list(
+  Loadings.df[influential[[1]], 1:3],
+  Loadings.df[influential[[2]], 1:3]
+  )
+# Manual adjustments
+position.df[[1]]$PC2[2] = position.df[[1]]$PC2[2] + 0.07
+position.df[[1]]$PC3[2] = position.df[[1]]$PC3[2] + 0.03
+position.df[[1]]$PC1[2] = position.df[[1]]$PC1[2] + 0.03
+position.df[[2]]$PC3[5] = position.df[[2]]$PC3[5] + 0.09
+position.df[[2]]$PC2[5] = position.df[[2]]$PC2[5] - 0.04
+position.df[[2]]$PC1[5] = position.df[[2]]$PC1[5] - 0.01
+plot(Loadings.df, influential, yadj = -0.02, colours = c, theta = 260, main_colour = "#F8766D", pos.df = position.df, text = TRUE)
+
+graphics.off()
+
+
+### Leave-one-out predictive distribution
+y_hat_full = theta %*% t(X)
+  
+# Need to loop over years and predict the left-one-out
+y_hat_loo = matrix(0, nrow = M, ncol = n)
+y_hat_diff = matrix(0, nrow = M, ncol = n)
+
+for(i in 1:n){
+  # Resample MCMC draws
+  w = exp(W[, i])
+  w_star = w/sum(w)
+  theta_resample = sample_n(as.data.frame(cbind(theta, sigma2)), size = M, replace = TRUE, weight = w_star)
+  
+  # Compute leave-one-out predictive posterior
+  temp = theta_resample %>% select(-sigma2) %>% as.matrix()
+  y_hat_loo[, i] = temp %*% X[1, ]
+  
+  # Compute difference between leave-one-out and full data 
+  y_hat_diff[, i] = y_hat_loo[, i] - median(y_hat_full[, i])
+}
+
+# Compute median and 25th, 75th quantiles for plot
+y_hat_plot = data.frame(Time = seq(1, nrow(data.df)),
+                        median = apply(y_hat_diff, 2, median),
+                        low25 = apply(y_hat_diff, 2, quantile, 0.25),
+                        high75 = apply(y_hat_diff, 2, quantile, 0.75),
+                        group = c(rep("A", N), rep("B", O), rep("C", O)))
+
+# Plot D_t (leave-one-out predictive minus full data) over time
+pdf("report/figures/sim_loopdd.pdf")
+p1 = ggplot(y_hat_plot, aes(x = Time, y = median, colour = group)) + 
+  geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
+  geom_point(shape = 18) + ylab("Difference") + xlab("Observation") + geom_hline(yintercept = 0, alpha = 0.5) +
+  scale_color_discrete(name = "Group", labels = c("A", "B", "C"))
+grid.arrange(p1, nrow = 2, ncol = 1)
+dev.off()
+
+### Change in marginal posterior
+
+obs = c(which(data.df$Group == "B"),  which(data.df$Group == "C"))
+M = nrow(beta_full)
+
+X = data.df
+
+beta_full = as.data.frame(theta)
+
+marginal_diff = data.frame()
+case = data.frame()
+
+for(i in 1:length(obs)){
+  resample = resampleDraws(W, theta, obs[i])
+  
+  diff = matrix(0, M, ncol(beta_full))
+  for(j in 1:ncol(resample)){
+    diff[, j] = resample[, j] - median(beta_full[, j])
+  }
+  
+  marginal_diff = rbind(marginal_diff, diff)
+  case = rbind(case, as.matrix(rep(as.character(obs[i]), M)))
+}
+
+colnames(case) = "Case"
+colnames(marginal_diff) = colnames(beta_full)
+colnames(marginal_diff)[1] = "Intercept"
+marginal_diff = cbind(marginal_diff, case) 
+
+marginal_diff.long = marginal_diff %>% select(Intercept, x1, x2, x3,Case) %>% gather(key = "param", value = "posterior.diff", -Case, factor_key = TRUE) %>% filter(param != "sigma2")
+
+levels(marginal_diff.long$param) = c("beta[0]", "beta[1]", "beta[2]", "beta[3]")
+
+# Specifying colours
+p = length(beta_full)
+Group = rep(c(rep("B", M*O), 
+              rep("C", M*O)), p)
+marginal_diff.long = cbind(marginal_diff.long, as.factor(Group))
+
+pdf("report/figures/sim_postdiff.pdf")
+ggplot(transform(marginal_diff.long,
+                 param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]"))), 
+       aes(x = Case, y = posterior.diff, fill = Group)) + geom_boxplot() +
+  facet_wrap(~param, nrow = 2, ncol = 2, labeller = label_parsed) +
+  ylab("Difference") + 
+  scale_fill_manual(values = c, labels = c("B", "C"), name = "Group")
+graphics.off()
+
+```
+
+```{r SIR_demo}
+# Independent Importance Resampling demonstration
+M = 10000
+mu = 0
+sig = 1
+
+# Assume target distribution is N(0, 1)
+# Assume candidate distribution of Uni(-5, 5)
+a = -4
+b = 4
+X = data.frame(d = runif(M, a, b))
+w = dnorm(X$d, mu, sig) / dunif(X$d, a, b)
+
+X_resample = sample_n(X, M, replace = TRUE, weight = w)
+
+plot.df = data.frame(candidate = X$d, IIR = X_resample$d)
+
+pdf("report/figures/iir_example.pdf", height = 4, width = 5)
+ggplot(plot.df) + geom_histogram(aes(x = candidate, fill = "red"), alpha = 0.5, binwidth = 0.2) +
+  geom_histogram(aes(x = IIR, fill = "blue"), alpha = 0.5, binwidth = 0.2) + 
+  xlab(expression(paste(beta))) + ylab("Count") +
+  scale_fill_discrete(name = "", labels = c("Approximation", "Candidate"))
+dev.off()
+```
+
+```{r appendix, echo=FALSE}
+###### Convergence Diagnostics ######
+# Three-factor CAPM
+model_3ff_formula = c("Lo30Ex", "HML", "MKTRF", "SMB")
+model_3ff = fitBayesianCAPM(ff_data, model_3ff_formula, fileName = "data/object/full/w_matrix_Lo30Ex_HML_MKTRF_SMB.rds", write = FALSE)
+
+pdf("report/figures/appendix/convergence_3ff_%d.pdf", onefile = FALSE)
+cumuplot(model_3ff[[2]], auto.layout = FALSE)
+dev.off()
+
+# Five-factor CAPM
+model_5ff_formula = c("Lo30Ex", "CMA", "HML", "MKTRF", "RMW", "SMB")
+model_5ff = fitBayesianCAPM(ff_data, model_5ff_formula, fileName = "data/object/full/w_matrix_Lo30Ex_CMA_HML_MKTRF_RMW_SMB.rds", write = FALSE)
+
+pdf("report/figures/appendix/convergence_5ff_%d.pdf", onefile = FALSE)
+f = cumuplot(model_5ff[[2]], auto.layout = FALSE)
+dev.off()
+
+# Simulated data
+
+pdf("report/figures/appendix/convergence_sim_%d.pdf", onefile = FALSE)
+cumuplot(sim_model, auto.layout = FALSE)
+dev.off()
+
+#cumuplot(model_3ff[[2]], c(0.025,0.5,0.975),sub="Cumuplot from Gibbs",auto.layout=FALSE)
+
+##### Further plots #####
+
+# Three-factor CAPM
+plot3D_appendix = function(model_df, theta, highlight, TEXT = FALSE, xadj = 0, yadj = 0, zadj = 0, hide = NULL){
+  pca.df = data.frame(PC1 = model_df[, 1], PC2 = model_df[, 2], PC3 = model_df[, 3],
+                  prop = model_df[, ncol(model_df)], t = seq(1, nrow(model_df)))
+  points.df = pca.df %>% filter(t %in% highlight)
+  scatter3D(x = pca.df$PC2,
+            y = pca.df$PC3,
+            z = pca.df$PC1,
+            xlab = paste("PC2 (", round(100 * pca.df$prop[2], 0), "%)", sep = ""),
+            ylab = paste("PC3 (", round(100 * pca.df$prop[3], 0), "%)", sep = ""),
+            zlab = paste("PC1 (", round(100 * pca.df$prop[1], 0), "%)", sep = ""),
+            col = "#1B9E77", 
+            colkey = FALSE,
+            surface = FALSE,
+            alpha = 0.5,
+            theta = theta, 
+            phi = 20, 
+            pch = 20, 
+            cex = 1,
+            bty = "b2",
+            ticktype = "simple")
+  
+  scatter3D(x = points.df$PC2,
+            y = points.df$PC3,
+            z = points.df$PC1,
+            xlab = paste("PC2 (", round(100 * pca.df$prop[2], 0), "%)", sep = ""),
+            ylab = paste("PC3 (", round(100 * pca.df$prop[3], 0), "%)", sep = ""),
+            zlab = paste("PC1 (", round(100 * pca.df$prop[1], 0), "%)", sep = ""),
+            col = "#D95F02", 
+            colkey = FALSE,
+            surface = FALSE,
+            alpha = 1.0,
+            theta = theta, 
+            phi = 20, 
+            pch = 20, 
+            cex = 1,
+            bty = "b2",
+            ticktype = "simple",
+            add = TRUE)
+  if (TEXT){
+    points.df$t[which(points.df$t == hide)] = ""
+    text3D(x = points.df$PC2 + xadj, y = points.df$PC3 + yadj, z = points.df$PC1 + zadj,  labels = points.df$t,
+        add = TRUE, colkey = FALSE, cex = 1)
+  }
+}
+# Highlight observations from 2007.5 to 2009
+obs = which(ff_data$Time_dec > 2007.5 & ff_data$Time_dec <= 2009)
+
+pdf("report/figures/appendix/pca_3ff_gfc.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,1) + 1.0)
+plot3D_appendix(model_3ff[[1]], 45, highlight = obs)
+plot3D_appendix(model_3ff[[1]], 125, highlight = obs)
+plot3D_appendix(model_3ff[[1]], 190, highlight = obs)
+dev.off()
+
+# Five-Factor CAPM highlighting observation 139 and 292
+obs = c(139, 292)
+pdf("report/figures/appendix/pca_5ff_appendix.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,1) + 1.0)
+plot3D_appendix(model_5ff[[1]], 1, highlight = obs, TEXT = TRUE, zadj = 0.04, xadj = -0.05)
+plot3D_appendix(model_5ff[[1]], 90, highlight = obs, TEXT = TRUE, zadj = -0.07, xadj = 0.04, yadj = -0.02, hide = 139)
+plot3D_appendix(model_5ff[[1]], 180, highlight = obs, TEXT = TRUE, zadj = -0.03, xadj = -0.01)
+dev.off()
+
+# Changes in marginal posterior for Five-Factor CAPM
+```
+
+```{r presentation}
+# This chunk produces the displays used in presentations 
+
+# These functions assist in producing the graphics displayed in presentation
+addPoints = function(points.df, colour = "#D95F02", a = 1.0, theta, phi = 20, text = FALSE, textLabel, xadj = 0, yadj = 0, zadj = 0, pos.df){
+  pca.df = data.frame(PC1 = points.df[, 1], PC2 = points.df[, 2], PC3 = points.df[, 3],
+                prop = points.df[, ncol(points.df)], t = seq(1, nrow(points.df)))
+  scatter3D(x = pca.df$PC2,
+          y = pca.df$PC3,
+          z = pca.df$PC1,
+          xlab = paste("PC2 (", round(100 * pca.df$prop[2], 0), "%)", sep = ""),
+          ylab = paste("PC3 (", round(100 * pca.df$prop[3], 0), "%)", sep = ""),
+          zlab = paste("PC1 (", round(100 * pca.df$prop[1], 0), "%)", sep = ""),
+          col = colour, 
+          colkey = FALSE,
+          surface = FALSE,
+          alpha = a,
+          theta = theta, 
+          type = "h",
+          phi = phi, 
+          pch = 18, 
+          cex = 1.1,
+          bty = "b2",
+          ticktype = "simple",
+          add = TRUE)
+  if (text){
+    text3D(x = pos.df$PC2 + xadj, y = pos.df$PC3 + yadj, z = pos.df$PC1 + zadj, labels = textLabel,
+        add = TRUE, colkey = FALSE, cex = 1)
+  }
+}
+plot3D_appendix = function(model_df, theta, a = 1.0, colour = "#1B9E77", phi = 20){
+  pca.df = data.frame(PC1 = model_df[, 1], PC2 = model_df[, 2], PC3 = model_df[, 3],
+                  prop = model_df[, ncol(model_df)], t = seq(1, nrow(model_df)))
+  scatter3D(x = pca.df$PC2,
+            y = pca.df$PC3,
+            z = pca.df$PC1,
+            xlab = paste("PC2 (", round(100 * pca.df$prop[2], 0), "%)", sep = ""),
+            ylab = paste("PC3 (", round(100 * pca.df$prop[3], 0), "%)", sep = ""),
+            zlab = paste("PC1 (", round(100 * pca.df$prop[1], 0), "%)", sep = ""),
+            col = colour, 
+            colkey = FALSE,
+            surface = FALSE,
+            alpha = a,
+            theta = theta, 
+            #type = "h",
+            phi = phi, 
+            pch = 18, 
+            cex = 1,
+            bty = "b2",
+            ticktype = "simple")
+}
+plot = function(model_df, influential_df, colours, theta, phi = 20, main_colour = "#000000FF", xadj = 0, yadj = 0, zadj = 0, pos.df, text = FALSE){
+  # Plot main figure
+  plot3D_appendix(model_df, theta, colour = main_colour, phi = phi)
+  
+  # Add groups of points on top with text
+  for(i in 1:length(influential_df)){
+    addPoints(model_df[influential_df[[i]], ], theta = theta, colour = colours[i], 
+              phi = phi, text = text, textLabel = influential_df[[i]],
+              xadj = xadj,
+              yadj = yadj,
+              zadj = zadj,
+              pos.df = pos.df[[i]])
+  }
+}
+
+#################################################################
+
+# Three-factor CAPM
+model_3ff_formula = c("Lo30Ex", "HML", "MKTRF", "SMB")
+model_3ff = fitBayesianCAPM(ff_data, model_3ff_formula, fileName = "data/object/full/w_matrix_Lo30Ex_HML_MKTRF_SMB.rds", write = FALSE)
+
+# Influential Groups
+pca.df = data.frame(PC1 = model_3ff[[1]][, 1], PC2 = model_3ff[[1]][, 2], PC3 = model_3ff[[1]][, 3],
+                    prop = model_3ff[[1]][, ncol(model_3ff[[1]])], t = seq(1, ncol(model_3ff[[1]]) - 1))
+pca.df$t = ""
+  
+threshold = 0.22
+eu_dist = rep(0, nrow(pca.df))
+for(i in 1:nrow(pca.df)){
+  eu_dist[i] = dist(rbind(pca.df[i, 1:3], c(0, 0, 0)))
+  if(eu_dist[i] > threshold)
+    pca.df$t[i] = i
+}
+
+influential_obs1 = which(eu_dist > threshold)
+influential_df = list(influential_obs1[1], influential_obs1[2], 
+                      influential_obs1[3], influential_obs1[4],
+                      influential_obs1[5:length(influential_obs1)])
+
+#pdf("report/figures/presentation/3ff_pca_colour.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,1) + 1.0)
+
+colours = gg2.col(length(influential_df) + 1)
+# Remove #000000FF (Black) if its in colour palette
+if("#000000FF" %in% colours){
+  colours = colours[which(colours != "#000000FF")]
+}
+
+plot(model_3ff[[1]], influential_df, colours = colours, theta = 45)
+plot(model_3ff[[1]], influential_df, colours = colours, theta = 125)
+plot(model_3ff[[1]], influential_df, colours = colours, theta = 190)
+#graphics.off()
+
+# Five-factor CAPM
+model_5ff_formula = c("Lo30Ex", "CMA", "HML", "MKTRF", "RMW", "SMB")
+model_5ff = fitBayesianCAPM(ff_data, model_5ff_formula, fileName = "data/object/full/w_matrix_Lo30Ex_CMA_HML_MKTRF_RMW_SMB.rds", write = FALSE)
+
+# Influential Groups
+pca.df = data.frame(PC1 = model_5ff[[1]][, 1], PC2 = model_5ff[[1]][, 2], PC3 = model_5ff[[1]][, 3],
+                    prop = model_5ff[[1]][, ncol(model_5ff[[1]])], t = seq(1, ncol(model_5ff[[1]]) - 1))
+pca.df$t = ""
+  
+threshold = 0.22
+eu_dist = rep(0, nrow(pca.df))
+for(i in 1:nrow(pca.df)){
+  eu_dist[i] = dist(rbind(pca.df[i, 1:3], c(0, 0, 0)))
+  if(eu_dist[i] > threshold)
+    pca.df$t[i] = i
+}
+
+influential_obs2 = which(eu_dist > threshold)
+influential_df = list(influential_obs2[1], influential_obs1[2], 
+                      influential_obs2[3:length(influential_obs2)])
+
+colours = gg2.col(length(influential_df) + 1)
+# Remove #000000FF (Black) if its in colour palette
+if("#000000FF" %in% colours){
+  colours = colours[which(colours != "#000000FF")]
+}
+# Use same colour on last group (GFC group) to keep consistency
+GFC = "#D36321FF"
+colours = c(colours[-length(colours)], GFC)
+
+pdf("report/figures/presentation/5ff_pca_colour.pdf")
+par(mfrow = c(1,3),
+          oma = c(1,1,0,1) + 0.1,
+          mar = c(0,0,0,1) + 1.0)
+
+#colours = c("#183551", "#698F3F", "#107989", "#616B6D", "#543221")
+plot(model_5ff[[1]], influential_df, colours = colours, theta = 45)
+plot(model_5ff[[1]], influential_df, colours = colours, theta = 125)
+plot(model_5ff[[1]], influential_df, colours = colours, theta = 190)
+graphics.off()
+
+```
+
