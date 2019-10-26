@@ -1,2 +1,6 @@
-# visualising-bayesian-case-influence
-Repository for code used in the 2019 EBS thesis 'Visualising Bayesian Case Influence'. Also includes code for the `Shiny App'.
+# Visualising Bayesian Case Influence
+Repository for code used in the 2019 EBS thesis 'Visualising Bayesian Case Influence'. 
+
+Also includes code for the 'Shiny App'.
+
+The data folder contains some data from https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html but more importantly, the .rds objects generated from the code. Some files were too large (~40mb) and couldn't be uploaded. These objects will need to be generated again by setting 'write=TRUE' in the 'fitBayesianCAPM' function. However, many of these objects were used in generating .gif files for the Shiny App so its not absolutely necessary to have them.
