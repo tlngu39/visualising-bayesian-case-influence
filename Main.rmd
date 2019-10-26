@@ -28,135 +28,8 @@ set.seed(27806189)
 
 ```{r function defs, echo=FALSE, warning=FALSE}
 source("helperFunctions.R")
+source("function_definitions.R")
 
-fitBayesianCAPM = function(model_data, factors, fileName, write) {
-  # Define burn-in and samples
-  B = 2000
-  G = 10000
-  M = G
-  
-  factors_ = factors
-  # Manipulating regression formula
-  formula = paste(factors[1], " ~ ", factors[2])
-  if(length(factors) > 2){
-    for (i in 3:length(factors)){
-      formula = paste(formula, " + ", factors[i])
-    }
-  }
-  #print(formula)
-  
-  # Fitting Bayesian model -> RETHINK PRIOR SPECIFICATION | ALSO: CONSIDER MODEL SPECIFICATION (GIBBS?)
-  model_mcmc = MCMCregress(as.formula(formula), data = model_data, burnin = B, mcmc = M, seed = 27806189, b0 = 0, B0 = 0, c0 = 0.001, d0 = 0.001)
-
-  # Converting elements in MCMC to numeric
-  model_mcmc.data = apply(model_mcmc, 2, as.numeric) %>% as.matrix()
-  colnames(model_mcmc)[1] = "Intercept"
-  
-  # Apply Thomas et al Method
-  theta = model_mcmc.data[, 1:(ncol(model_mcmc.data) - 1)]
-  sigma2 = model_mcmc.data[, ncol(model_mcmc.data)]
-  n = length(model_data$Time)
-  W = matrix(0, M, n)
-  
-  # Setting up y vector and X matrix
-  y = as.matrix(model_data[factors[1]]) # y is excess returns
-  #factors_[factors == "\`MKT-RF\`"] = "MKT-RF"
-  factors_ = factors_[-1]
-  X = model_data[factors_]
-  X$intercept = 1 
-  X = X %>% dplyr::select(intercept, everything()) # X is actual factors including intercept
-
-  # Need to have everything as.matrix for matrix arithmetic to work
-  
-  if (write){
-    # Evaluating log case importance sampling deletion weights
-    for (i in 1:n){
-      for (j in 1:M){
-        W[j,i] = 0.5*log(2*pi*sigma2[j]) + 0.5*(1/sigma2[j])*(y[i] - as.matrix(X[i,]) %*% theta[j,] )^2
-        #print(c(i, j))
-      }
-      #print(i)
-    } 
-    saveRDS(W, file = fileName)
-  }
-  else if (!write)
-  {
-    print(paste("Reading from ", fileName, sep = ""))
-    W = readRDS(file = fileName)
-  }
-  else
-    return("Error in specifying read or write of RDS file")
-  
-  # Storing covariance matrix of weights
-  w_matrix = W
-  Cov = cov(W)
-  
-  # Get eigen-decomposition
-  Loadings_ = round(eigen(Cov)$vectors, 4)
-  prop_ = round(eigen(Cov)$values / sum(eigen(Cov)$values), 4)
-  
-  # Returns list of: (1) dataframe containing loadings and proportions, (2) MCMC draws
-  # (1) is the result of performing an eigenvector decomp on cov(W)
-  return(list(data.frame(Loadings = Loadings_, prop = prop_), model_mcmc, w_matrix))
-} 
-
-plotPCA = function(data_df, model_df, title_) {
-  # model_df should be the loadings + prop object created by fitBayesianCAPM
-  # PC1 = z-axis, PC2 = x-axis, PC3 = y-axis
-  zlab = paste("PC1 (", round(100 * model_df$prop[1], 0), "%)", sep = "")
-  xlab = paste("PC2 (", round(100 * model_df$prop[2], 0), "%)", sep = "")
-  ylab = paste("PC3 (", round(100 * model_df$prop[3], 0), "%)", sep = "")
-  
-  time = data_df$Time
-  Loadings.df = data.frame(Time = time, PC1 = model_df[, 1], PC2 = model_df[, 2], PC3 = model_df[, 3])
-  plot_ly(Loadings.df, z = ~PC1, x = ~PC2, y = ~PC3, text = ~paste("Time: ", Time, "<br>PC1: ", PC1, "<br>PC2: ", PC2, "<br>PC3: ", PC3),
-          hoverinfo = "text", marker = list(size = 4)) %>%
-    layout(title = title_, scene = list(xaxis = list(title = xlab), yaxis = list(title = ylab), zaxis = list(title = zlab)))
-}
-
-# Parallel importance reasmpling function
-resampleDraws = function(W, model_draws, case_delete){
-  model_draws.df = as.data.frame(model_draws)
-  # Normalise weights (must also transform since Thomas et al. computes the LOG weights)
-  w = exp(W[, case_delete])
-  L = nrow(W)
-  w_star = w/sum(w)
-  beta_resample = sample_n(model_draws.df, L, weight = w, replace = TRUE)
-  return(beta_resample)
-}
-
-plotScatter3D = function(model_df, theta, threshold, xadj = -0.01, yadj = -0.01, zadj = -0.03, hide = NULL){
-  pca.df = data.frame(PC1 = model_df[, 1], PC2 = model_df[, 2], PC3 = model_df[, 3],
-                    prop = model_df[, ncol(model_df)], t = seq(1, ncol(model_df) - 1))
-  pca.df$t = ""
-  eu_dist = rep(0, nrow(pca.df))
-  for(i in 1:nrow(pca.df)){
-    eu_dist[i] = dist(rbind(pca.df[i, 1:3], c(0, 0, 0)))
-    if(eu_dist[i] > threshold)
-      pca.df$t[i] = i
-  }
-  
-  # Allow overiding labels of certain obs
-  pca.df$t[hide] = ""
-  scatter3D(x = pca.df$PC2,
-            y = pca.df$PC3,
-            z = pca.df$PC1,
-            xlab = paste("PC2 (", round(100 * pca.df$prop[2], 0), "%)", sep = ""),
-            ylab = paste("PC3 (", round(100 * pca.df$prop[3], 0), "%)", sep = ""),
-            zlab = paste("PC1 (", round(100 * pca.df$prop[1], 0), "%)", sep = ""),
-            col = "black", 
-            #colvar = pca.df$t,
-            colkey = FALSE,
-            surface = FALSE, 
-            theta = theta, 
-            phi = 20, 
-            pch = 20, 
-            cex = 1,
-            bty = "b2",
-            ticktype = "simple")
-  text3D(x = pca.df$PC2 + xadj, y = pca.df$PC3 + yadj, z = pca.df$PC1 + zadj,  labels = pca.df$t,
-        add = TRUE, colkey = FALSE, cex = 1)
-}
 ff_data <- load("data/Portfolios_Formed_on_ME.csv", frequency = "monthly", model = "5FF")
 
 # Construct excess returns
@@ -167,37 +40,21 @@ ff_data <- ff_data %>% mutate(Time_dec = as.numeric(substr(ff_data$Time, 0, 4)) 
 ```
 
 ```{r thomas_procedure, echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
-#####3 Test new function with new definition of MKT #######
 
 # Three-Factor CAPM
 model_3ff_formula = c("Lo30Ex", "MKTRF", "SMB", "HML") 
 model_3ff = fitBayesianCAPM(ff_data, model_3ff_formula, fileName = "data/object/w_matrix_3ff_lo30.rds", write = FALSE)
 
-# Three-Factor + RMW
-model_formula = c("Lo30Ex", "MKTRF", "SMB", "HML", "RMW")
-model_3ff_rmw = fitBayesianCAPM(ff_data, model_formula, fileName = "data/object/w_matrix_3ff_rmw_lo30.rds", write = FALSE)
-
-# Three-Factor + CMA
-model_formula = c("Lo30Ex", "MKTRF", "SMB", "HML", "CMA") 
-model_3ff_cma = fitBayesianCAPM(ff_data, model_formula, fileName = "data/object/w_matrix_3ff_cma_lo30.rds", write = FALSE)
-
 # Five-Factor
 model_5ff_formula = c("Lo30Ex", "MKTRF", "SMB", "HML", "RMW", "CMA")
 model_5ff = fitBayesianCAPM(ff_data, model_5ff_formula, fileName = "data/object/w_matrix_5ff_lo30.rds", write = FALSE)
-
-plotPCA(ff_data, model_3ffk[[1]], "Three-Factor CAPM Small Stocks")
-
-temp.data = data.frame(Time = as.numeric(substr(ff_data$Time, 0, 4)) + as.numeric(substr(ff_data$Time, 5, 6))/12, Lo30Ex = ff_data$Lo30Ex)
-ggplot(temp.data, aes(x = Time, y = Lo30Ex)) + geom_line()
-
-# plotPCA(ff_data, model_5ff[[1]], "Five-Factor CAPM Small Stocks")
-# plotPCA(ff_data, model_3ff_cma[[1]], "3FF + CMA")
-# plotPCA(ff_data, model_3ff_rmw[[1]], "3FF + RMW")
 
 
 ```
 
 ```{r models, warning=FALSE, echo=FALSE}
+# Produce all possible variations of fama-french factor models
+# This is mainly for the shiny-app
 ########################
 # Use comb(FACTORS, m = 1,2,3,4,5) to get all possible combinations
 portfolio = "Lo30Ex"
