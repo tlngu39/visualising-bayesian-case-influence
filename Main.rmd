@@ -278,12 +278,12 @@ pdf("report/figures/loopdd_2x1.pdf")
 p1 = ggplot(y_hat_med[1:350,], aes(x = Time, y = median, colour = Influential)) + 
   geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
   geom_point(shape = 18) + ggtitle(title) + ylim(-0.35, 0.22) +
-  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+  scale_color_discrete(name = "Group", labels = c("N", "I")) + ylab(expression(bold(D)[t]))
 
 p2 = ggplot(y_hat_med[350:nrow(y_hat_med),], aes(x = Time, y = median, color = Influential)) + 
   geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
   geom_point(shape = 18) + ggtitle(title) + ylim(-0.35, 0.22) +
-  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+  scale_color_discrete(name = "Group", labels = c("N", "I")) + ylab(expression(bold(D)[t]))
 
 grid.arrange(p1, p2, nrow = 2, ncol = 1)
 graphics.off()
@@ -330,7 +330,7 @@ pdf("report/figures/3ff_postdiff.pdf")
 ggplot(transform(marginal_diff.long,
                  param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]"))), 
        aes(x = Case, y = posterior.diff)) + geom_boxplot() +
-  facet_wrap(~param, nrow = 2, ncol = 2, labeller = label_parsed) + ylab("Difference")
+  facet_wrap(~param, nrow = 2, ncol = 2, labeller = label_parsed) + ylab(expression(bold(M)["j,t"]))
 graphics.off()
 ```
 
@@ -409,12 +409,12 @@ pdf("report/figures/loopdd_2x1_5ff.pdf")
 p1 = ggplot(y_hat_med[1:350,], aes(x = Time, y = median, colour = Influential)) + 
   geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
   geom_point(shape = 18) + ggtitle(title) + ylim(-0.43, 0.215) +
-  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+  scale_color_discrete(name = "Group", labels = c("N", "I")) + ylab(expression(bold(D)[t]))
 
 p2 = ggplot(y_hat_med[350:nrow(y_hat_med),], aes(x = Time, y = median, color = Influential)) + 
   geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
   geom_point(shape = 18) + ggtitle(title) + ylim(-0.43, 0.21) +
-  scale_color_discrete(name = "Group", labels = c("A", "B")) + ylab("Difference") + theme(legend.position = c(0.9, 0.2))
+  scale_color_discrete(name = "Group", labels = c("N", "I")) + ylab(expression(bold(D)[t]))
 
 grid.arrange(p1, p2, nrow = 2, ncol = 1)
 graphics.off()
@@ -464,7 +464,7 @@ ggplot(transform(marginal_diff.long,
                  param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"))), 
        aes(x = Case, y = posterior.diff)) + geom_boxplot() +
   facet_wrap(~param, nrow = 2, ncol = 3, labeller = label_parsed) +
-  ylab("Difference") 
+  ylab(expression(bold(M)["j,t"])) 
 graphics.off()
 
 
@@ -479,7 +479,7 @@ ggplot(transform(marginal_diff.long2,
                  param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"))), 
        aes(x = Case, y = posterior.diff)) + geom_boxplot() +
   facet_wrap(~param, nrow = 2, ncol = 3, labeller = label_parsed) +
-  ylab("Difference")
+  ylab(expression(bold(M)["j,t"]))
 graphics.off()
 
 #######
@@ -496,7 +496,7 @@ ggplot(transform(marginal_diff.long,
                  param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"))), 
        aes(x = Case, y = posterior.diff)) + geom_boxplot() +
   facet_wrap(~param, nrow = 2, ncol = 3, labeller = label_parsed) +
-  ylab("Difference")
+  ylab(expression(bold(M)["j,t"]))
 graphics.off()
 
 ```
@@ -658,7 +658,7 @@ y_hat_plot = data.frame(Time = seq(1, nrow(data.df)),
 pdf("report/figures/sim_loopdd.pdf")
 p1 = ggplot(y_hat_plot, aes(x = Time, y = median, colour = group)) + 
   geom_errorbar(aes(ymin = low25, ymax = high75), width = 0.14, size = 0.2) +
-  geom_point(shape = 18) + ylab("Difference") + xlab("Observation") + geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_point(shape = 18) + ylab(expression(bold(D)[t])) + xlab("Observation") + geom_hline(yintercept = 0, alpha = 0.5) +
   scale_color_discrete(name = "Group", labels = c("A", "B", "C"))
 grid.arrange(p1, nrow = 2, ncol = 1)
 dev.off()
@@ -707,7 +707,7 @@ ggplot(transform(marginal_diff.long,
                  param = factor(param, levels = c("beta[0]", "beta[1]", "beta[2]", "beta[3]"))), 
        aes(x = Case, y = posterior.diff, fill = Group)) + geom_boxplot() +
   facet_wrap(~param, nrow = 2, ncol = 2, labeller = label_parsed) +
-  ylab("Difference") + 
+  ylab(expression(bold(M)["j,t"])) + 
   scale_fill_manual(values = c, labels = c("B", "C"), name = "Group")
 graphics.off()
 
