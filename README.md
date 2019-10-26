@@ -1,7 +1,7 @@
 # Visualising Bayesian Case Influence
 Repository for code used in the 2019 EBS thesis 'Visualising Bayesian Case Influence'. 
 
-Also includes code for the 'Shiny App'. The app is hosted at https://tlngu39.shinyapps.io/case-influence/. The shinyapps.io hosting service only allows 25 active hours of use, and so, the link may not work depending on when the user is accessing it. It is likely that the only use this app will see is when I use it to show off to my friends and family. That is unlikely to take up all 25 hours.
+Also includes code for the 'Shiny App'. The app is hosted at https://tlngu39.shinyapps.io/case-influence/. The shinyapps.io hosting service only allows 25 active hours of use, and so, the link may not work depending on when the user is accessing it. It is likely that the only use this app will see is when I use it to show off to my friends and family. That will definitely take up all 25 hours.
 
 The data folder contains some data from https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html but more importantly, the .rds objects generated from the code. Some files were too large (~40mb) and couldn't be uploaded. These objects will need to be generated again by setting 'write=TRUE' in the 'fitBayesianCAPM' function. However, many of these objects were used in generating .gif files for the Shiny App so its not absolutely necessary to have them.
 
